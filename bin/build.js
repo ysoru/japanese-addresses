@@ -694,7 +694,7 @@ const main = async () => {
     const outPath = path.join(dataDir, `nlftp_mlit_130b_${prefCode}.csv`)
 
     if (!fs.existsSync(outPath)) {
-      await _downloadNlftpMlitFile(prefCode, outPath, '13.0b')
+      await _downloadNlftpMlitFile(prefCode, outPath, '8.0b')
     }
   }, 1)
 
@@ -702,7 +702,7 @@ const main = async () => {
     const outPath = path.join(dataDir, `nlftp_mlit_180a_${prefCode}.csv`)
 
     if (!fs.existsSync(outPath)) {
-      await _downloadNlftpMlitFile(prefCode, outPath, '18.0a')
+      await _downloadNlftpMlitFile(prefCode, outPath, '23.0a')
     }
   }, 3)
 
