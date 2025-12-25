@@ -301,7 +301,6 @@ const _downloadZippedFile = (url, path) => new Promise( resolve => {
 
 const downloadPostalCodeKana = async () => {
   const url = 'https://www.post.japanpost.jp/zipcode/dl/kogaki/zip/ken_all.zip'
-  const csvPath = `${dataDir}/postalcode_kogaki.csv`
   // const csvPath = `${dataDir}/postalcode_kogaki.csv`
   const csvPath = `${dataDir}/ken_all.csv`
   if (!fs.existsSync(csvPath)) {
@@ -551,7 +550,7 @@ const getGaikuAddressItems = async (prefCode, postalCodeKanaItems, postalCodeRom
     const cityName = renameEntry ? renameEntry.renamed : line['市区町村名']
     const recordKey = line['都道府県名'] + cityName + line['大字・丁目名'] + line['小字・通称名']
     addToCoords(recordKey, Number(line['経度']), Number(line['緯度']))
-　}
+}
 
   let count = 0
 
