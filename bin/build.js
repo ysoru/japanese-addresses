@@ -302,6 +302,8 @@ const _downloadZippedFile = (url, path) => new Promise( resolve => {
 const downloadPostalCodeKana = async () => {
   const url = 'https://www.post.japanpost.jp/zipcode/dl/kogaki/zip/ken_all.zip'
   const csvPath = `${dataDir}/postalcode_kogaki.csv`
+  // const csvPath = `${dataDir}/postalcode_kogaki.csv`
+  const csvPath = `${dataDir}/ken_all.csv`
   if (!fs.existsSync(csvPath)) {
     await _downloadZippedFile(url, csvPath)
   }
@@ -339,8 +341,10 @@ const downloadPostalCodeKana = async () => {
 module.exports.downloadPostalCodeKana = downloadPostalCodeKana
 
 const downloadPostalCodeRome = async () => {
-  const url = 'https://www.post.japanpost.jp/zipcode/dl/roman/ken_all_rome.zip'
-  const csvPath = `${dataDir}/postalcode_roman.csv`
+  // const url = 'https://www.post.japanpost.jp/zipcode/dl/roman/ken_all_rome.zip'
+  // const csvPath = `${dataDir}/postalcode_roman.csv`
+  const url = 'https://www.post.japanpost.jp/zipcode/dl/roman/KEN_ALL_ROME.zip'
+  const csvPath = `${dataDir}/KEN_ALL_ROME.csv`
   if (!fs.existsSync(csvPath)) {
     await _downloadZippedFile(url, csvPath)
   }
