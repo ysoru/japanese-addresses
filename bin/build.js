@@ -227,7 +227,7 @@ const getPostalKanaOrRomeItems = (
     ({ pref, isj }) => (pref === prefName && isj === cityName),
   )
 
-  const townNameChomeRemoved = removeChome(townName)
+  const townNameChomeRemoved = removeChome(townName || '')
 
   if (postalAlt) {
     let postalRecord = postalCodeKanaOrRomeItems.find(
