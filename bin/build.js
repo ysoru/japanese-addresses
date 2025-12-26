@@ -375,7 +375,14 @@ module.exports.downloadPostalCodeRome = downloadPostalCodeRome
 
 const _downloadNlftpMlitFile = (prefCode, outPath, version) => new Promise((resolve, reject) => {
   const url = `https://nlftp.mlit.go.jp/isj/dls/data/${version}/${prefCode}000-${version}.zip`
-  https.get(url, res => {
+  const req = https.get(url, res => {
+    // HTTPステータスコードが200以外の場合はエラー
+    if (res.statusCode !== 200) {
+      res.resume() // レスポンスを消費して接続を閉じる
+      reject(new Error(`Failed to download ${url}: HTTP ${res.statusCode} ${res.statusMessage || ''}`))
+      return
+    }
+
     let atLeastOneFile = false
     res.pipe(unzip.Parse()).on('entry', entry => {
       if (entry.type === 'Directory' || entry.path.slice(-4) !== '.csv') {
@@ -390,11 +397,21 @@ const _downloadNlftpMlitFile = (prefCode, outPath, version) => new Promise((reso
           fs.renameSync(tmpOutPath, outPath)
           resolve(outPath)
         })
+        .on('error', reject)
     }).on('end', () => {
       if (!atLeastOneFile) {
         reject(new Error('no CSV file detected in archive file'))
       }
+    }).on('error', err => {
+      reject(new Error(`ZIP parse error for ${url}: ${err.message}`))
     })
+  })
+
+  // ネットワークエラーのハンドリング
+  req.on('error', reject)
+  req.setTimeout(60000, () => {
+    req.destroy()
+    reject(new Error(`Request timeout for ${url}`))
   })
 })
 
@@ -693,7 +710,7 @@ const main = async () => {
     const outPath = path.join(dataDir, `nlftp_mlit_130b_${prefCode}.csv`)
 
     if (!fs.existsSync(outPath)) {
-      await _downloadNlftpMlitFile(prefCode, outPath, '8.0b')
+      await _downloadNlftpMlitFile(prefCode, outPath, '18.0b')
     }
   }, 1)
 
