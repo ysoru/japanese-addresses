@@ -19,6 +19,46 @@ const { featureCollection, point } = require('@turf/helpers');
 
 const sleep = promisify(setTimeout)
 
+// リトライ用のヘルパー関数
+const withRetry = async (fn, maxRetries = 3, retryDelay = 1000) => {
+  let lastError
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn()
+    } catch (error) {
+      lastError = error
+      const errorMessage = error.message || ''
+      
+      // リトライすべきエラーかどうかを判定
+      const isNetworkError = 
+        error.code === 'ECONNRESET' ||
+        error.code === 'ETIMEDOUT' ||
+        error.code === 'ENOTFOUND' ||
+        error.code === 'ECONNREFUSED' ||
+        errorMessage.includes('Network error')
+      
+      // HTTP 5xxエラー（サーバーエラー）を判定
+      const http5xxMatch = errorMessage.match(/HTTP (5\d{2})/)
+      const isHttp5xx = http5xxMatch !== null
+      
+      // HTTP 4xxエラー（クライアントエラー）はリトライしない
+      const http4xxMatch = errorMessage.match(/HTTP (4\d{2})/)
+      const isHttp4xx = http4xxMatch !== null
+      
+      const shouldRetry = (isNetworkError || isHttp5xx) && !isHttp4xx
+      
+      if (!shouldRetry || attempt === maxRetries) {
+        throw error
+      }
+      
+      console.error(`Attempt ${attempt}/${maxRetries} failed: ${errorMessage.substring(0, 200)}. Retrying in ${retryDelay}ms...`)
+      await sleep(retryDelay)
+      retryDelay *= 2 // 指数バックオフ
+    }
+  }
+  throw lastError
+}
+
 const dataDir = path.join(path.dirname(path.dirname(__filename)), 'data')
 
 const isjRenames = [
@@ -245,6 +285,10 @@ const getPostalKanaOrRomeItems = (
           item['市区町村名'] === postalAlt.postal
         ,
       )
+      if (!postalRecord) {
+        console.error(`postalRecord not found: prefName=${prefName}, cityName=${cityName}, townName=${townName}`)
+        return null
+      }
       if (postalRecord['町域名カナ']) {
         postalRecord['町域名カナ'] = ''
       }
@@ -274,6 +318,9 @@ const getPostalKanaOrRomeItems = (
           item['市区町村名'] === cityName
         ,
       )
+      if (!postalRecord) {
+        return null
+      }
       if (postalRecord['町域名カナ']) {
         postalRecord['町域名カナ'] = ''
       }
@@ -285,8 +332,15 @@ const getPostalKanaOrRomeItems = (
   }
 }
 
-const _downloadZippedFile = (url, path) => new Promise( resolve => {
-  https.get(url, res => {
+const _downloadZippedFile = (url, path) => new Promise((resolve, reject) => {
+  const req = https.get(url, res => {
+    // HTTPステータスコードが200以外の場合はエラー
+    if (res.statusCode !== 200) {
+      res.resume() // レスポンスを消費して接続を閉じる
+      reject(new Error(`Failed to download: url=${url}, path=${path}, HTTP ${res.statusCode} ${res.statusMessage || ''}`))
+      return
+    }
+
     res
       .pipe(unzip.Parse())
       .on('entry', entry => {
@@ -295,7 +349,18 @@ const _downloadZippedFile = (url, path) => new Promise( resolve => {
           .on('finish', () => {
             resolve(path)
           })
+          .on('error', err => {
+            reject(new Error(`File write error: url=${url}, path=${path}, error=${err.message}, stack=${err.stack}`))
+          })
       })
+      .on('error', err => {
+        reject(new Error(`ZIP parse error: url=${url}, path=${path}, error=${err.message}, stack=${err.stack}`))
+      })
+  })
+
+  // ネットワークエラーのハンドリング
+  req.on('error', err => {
+    reject(new Error(`Network error: url=${url}, path=${path}, error=${err.message}, code=${err.code}, syscall=${err.syscall}, stack=${err.stack}`))
   })
 })
 
@@ -304,7 +369,7 @@ const downloadPostalCodeKana = async () => {
   // const csvPath = `${dataDir}/postalcode_kogaki.csv`
   const csvPath = `${dataDir}/ken_all.csv`
   if (!fs.existsSync(csvPath)) {
-    await _downloadZippedFile(url, csvPath)
+    await withRetry(() => _downloadZippedFile(url, csvPath))
   }
   const buffer = await fs.promises.readFile(csvPath)
   const text = Encoding.convert(buffer, {
@@ -345,7 +410,7 @@ const downloadPostalCodeRome = async () => {
   const url = 'https://www.post.japanpost.jp/zipcode/dl/roman/KEN_ALL_ROME.zip'
   const csvPath = `${dataDir}/KEN_ALL_ROME.csv`
   if (!fs.existsSync(csvPath)) {
-    await _downloadZippedFile(url, csvPath)
+    await withRetry(() => _downloadZippedFile(url, csvPath))
   }
   const buffer = await fs.promises.readFile(csvPath)
   const text = Encoding.convert(buffer, {
@@ -379,7 +444,7 @@ const _downloadNlftpMlitFile = (prefCode, outPath, version) => new Promise((reso
     // HTTPステータスコードが200以外の場合はエラー
     if (res.statusCode !== 200) {
       res.resume() // レスポンスを消費して接続を閉じる
-      reject(new Error(`Failed to download ${url}: HTTP ${res.statusCode} ${res.statusMessage || ''}`))
+      reject(new Error(`Failed to download: prefCode=${prefCode}, version=${version}, url=${url}, HTTP ${res.statusCode} ${res.statusMessage || ''}, outPath=${outPath}`))
       return
     }
 
@@ -397,21 +462,21 @@ const _downloadNlftpMlitFile = (prefCode, outPath, version) => new Promise((reso
           fs.renameSync(tmpOutPath, outPath)
           resolve(outPath)
         })
-        .on('error', reject)
+        .on('error', err => {
+          reject(new Error(`File write error: prefCode=${prefCode}, version=${version}, url=${url}, outPath=${outPath}, tmpPath=${tmpOutPath}, error=${err.message}, stack=${err.stack}`))
+        })
     }).on('end', () => {
       if (!atLeastOneFile) {
-        reject(new Error('no CSV file detected in archive file'))
+        reject(new Error(`No CSV file detected: prefCode=${prefCode}, version=${version}, url=${url}, outPath=${outPath}`))
       }
     }).on('error', err => {
-      reject(new Error(`ZIP parse error for ${url}: ${err.message}`))
+      reject(new Error(`ZIP parse error: prefCode=${prefCode}, version=${version}, url=${url}, outPath=${outPath}, error=${err.message}, stack=${err.stack}`))
     })
   })
 
   // ネットワークエラーのハンドリング
-  req.on('error', reject)
-  req.setTimeout(60000, () => {
-    req.destroy()
-    reject(new Error(`Request timeout for ${url}`))
+  req.on('error', err => {
+    reject(new Error(`Network error: prefCode=${prefCode}, version=${version}, url=${url}, outPath=${outPath}, error=${err.message}, code=${err.code}, syscall=${err.syscall}, stack=${err.stack}`))
   })
 })
 
@@ -441,7 +506,11 @@ const getOazaAddressItems = async (prefCode, postalCodeKanaItems, postalCodeRome
   for (let index = 0; index < dataLength; index++) {
     const line = data[index]
 
-    bar.update(index + 1)
+    // 性能改善
+    if (index % 10000 === 0 || index === dataLength - 1) {
+      bar.update(index + 1)
+    }
+    
 
     const renameEntry =
       isjRenames.find(
@@ -500,7 +569,7 @@ const getOazaAddressItems = async (prefCode, postalCodeKanaItems, postalCodeRome
       cityName,
       line['大字町丁目名'],
       `POINT(${lon} ${lat})`,
-      postalCodeKanaItem['郵便番号'],
+      postalCodeKanaItem ? postalCodeKanaItem['郵便番号'] : '',
     ]
       .map(item =>
         item && typeof item === 'string' ? `"${item}"` : item,
@@ -575,7 +644,10 @@ const getGaikuAddressItems = async (prefCode, postalCodeKanaItems, postalCodeRom
   for (let index = 0; index < dataLength; index++) {
     const line = data[index]
 
-    bar.update(index + 1)
+    // 性能改善
+    if (index % 10000 === 0 || index === dataLength - 1) {
+      bar.update(index + 1)
+    }
 
     const renameEntry =
       isjRenames.find(
@@ -600,11 +672,13 @@ const getGaikuAddressItems = async (prefCode, postalCodeKanaItems, postalCodeRom
     const postalCodeKanaItem = getPostalKanaOrRomeItems(
       line['都道府県名'], cityName, townName, postalCodeKanaItems, '市区町村名カナ', 'kana',
     )
-    const postalCodeRomeItem = getPostalKanaOrRomeItems(
-      line['都道府県名'], cityName, townName, postalCodeRomeItems, '市区町村名ローマ字', 'rome',
-    )
+    // 性能対策、未使用のため
+    // const postalCodeRomeItem = getPostalKanaOrRomeItems(
+    //   line['都道府県名'], cityName, townName, postalCodeRomeItems, '市区町村名ローマ字', 'rome',
+    // )
 
-    const center = getCenter(recordKey)
+    // 性能対策、未使用のため
+    // const center = getCenter(recordKey)
     const record = [
       // postalCodeKanaItem['郵便番号'],
       // prefCode,
@@ -639,7 +713,7 @@ const getGaikuAddressItems = async (prefCode, postalCodeKanaItems, postalCodeRom
       cityName,
       townName,
       `POINT(${lon} ${lat})`,
-      postalCodeKanaItem['郵便番号'],
+      postalCodeKanaItem ? postalCodeKanaItem['郵便番号'] : '',
     ]
       .map(item =>
         item && typeof item === 'string' ? `"${item}"` : item,
@@ -710,7 +784,7 @@ const main = async () => {
     const outPath = path.join(dataDir, `nlftp_mlit_130b_${prefCode}.csv`)
 
     if (!fs.existsSync(outPath)) {
-      await _downloadNlftpMlitFile(prefCode, outPath, '18.0b')
+      await withRetry(() => _downloadNlftpMlitFile(prefCode, outPath, '18.0b'))
     }
   }, 1)
 
@@ -718,7 +792,7 @@ const main = async () => {
     const outPath = path.join(dataDir, `nlftp_mlit_180a_${prefCode}.csv`)
 
     if (!fs.existsSync(outPath)) {
-      await _downloadNlftpMlitFile(prefCode, outPath, '23.0a')
+      await withRetry(() => _downloadNlftpMlitFile(prefCode, outPath, '23.0a'))
     }
   }, 3)
 
